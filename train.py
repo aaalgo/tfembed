@@ -19,31 +19,37 @@ def encode (X, dim=64):
     net = X
     layers = [X]
     with tf.name_scope('encode'):
-        net = slim.fully_connected(net, 128)
-        net = slim.fully_connected(net, dim, activation_fn=None)
-        net = tf.sigmoid(net)
+        net = slim.fully_connected(net, 256)
+        net = slim.fully_connected(net, 256)
+        net = slim.fully_connected(net, dim, activation_fn=tf.sigmoid)
+        net -= 0.5
     net = tf.identity(net, 'hash')
     return net
 
-def triplet_loss (H, M):
-    loss = tf.reduce_mean(tf.abs((H - 0.5) * M))
-    loss = tf.identity(loss, 'loss')
-    return loss, [loss]
+def triplet_loss (H, margin):
+    A = tf.slice(H, [0, 0], [1, -1])    # ref
+    B = tf.slice(H, [1, 0], [1, -1])    # near
+    C = tf.slice(H, [2, 0], [1, -1])    # far
+    l1 = tf.nn.l2_loss(A-B)
+    l2 = tf.nn.l2_loss(A-C)
+    loss = tf.clip_by_value(l1 - l2 + margin, 0, 1e10)
+    return loss, l1, l2
 
 flags = tf.app.flags
 FLAGS = flags.FLAGS
 flags.DEFINE_string('db', 'db', '')
 flags.DEFINE_float('learning_rate', 0.01, 'Initial learning rate.')
-flags.DEFINE_bool('decay', False, '')
-flags.DEFINE_float('decay_rate', 10000, '')
-flags.DEFINE_float('decay_steps', 0.9, '')
+#flags.DEFINE_bool('decay', False, '')
+#flags.DEFINE_float('decay_rate', 10000, '')
+#flags.DEFINE_float('decay_steps', 0.9, '')
 flags.DEFINE_string('model', 'model', 'Directory to put the training data.')
 flags.DEFINE_string('resume', None, '')
 flags.DEFINE_integer('max_steps', 200000, '')
-flags.DEFINE_integer('epoch_steps', 100, '')
-flags.DEFINE_integer('ckpt_epochs', 200, '')
+flags.DEFINE_integer('epoch_steps', 10000, '')
+flags.DEFINE_integer('ckpt_epochs', 20, '')
 flags.DEFINE_integer('verbose', logging.INFO, '')
 flags.DEFINE_integer('dim', 64, '')
+flags.DEFINE_float('margin', 1.0, '')
 
 
 def main (_):
@@ -54,19 +60,13 @@ def main (_):
         pass
     assert FLAGS.db and os.path.exists(FLAGS.db)
 
-    stream = _tfembed.SampleStream(FLAGS.db)
+    stream = _tfembed.SampleStream(FLAGS.db, FLAGS.db + ".cache")
 
     X = tf.placeholder(tf.float32, shape=(None, stream.dim()), name="X")
-    M = tf.placeholder(tf.float32, shape=(None, FLAGS.dim), name="mask")
 
     H = encode(X, FLAGS.dim)
 
-    loss, metrics = triplet_loss(H, M)
-
-    #tf.summary.scalar("loss", loss)
-    metric_names = [x.name[:-2] for x in metrics]
-    for x in metrics:
-        tf.summary.scalar(x.name.replace(':', '_'), x)
+    L, L0, L1 = triplet_loss(H, FLAGS.margin)
 
     rate = 0.0001
     global_step = tf.Variable(0, name='global_step', trainable=False)
@@ -75,13 +75,14 @@ def main (_):
     #    tf.summary.scalar('learning_rate', rate)
     optimizer = tf.train.AdamOptimizer(rate)
 
-    train_op = optimizer.minimize(loss, global_step=global_step)
+    train_op = optimizer.minimize(L, global_step=global_step)
 
     init = tf.global_variables_initializer()
 
     saver = tf.train.Saver()
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth=True
+    config = tf.ConfigProto(device_count = {'GPU': 0})
+
+    metrics = ['loss', 'l0', 'l1', 'accu', 'fill']
 
     with tf.Session(config=config) as sess:
         sess.run(init)
@@ -96,17 +97,15 @@ def main (_):
             for _ in tqdm(range(FLAGS.epoch_steps), leave=False):
                 triplet = stream.next()
                 feed_dict = {X: triplet}
-                h = sess.run(H, feed_dict={X: triplet})
-                mask, err, _ = _tfembed.eval_mask(h);
-                mm, _ = sess.run([metrics, train_op], feed_dict={X: triplet, M: mask})
-                avg += np.array(mm)
+                h, l, l0, l1, _ = sess.run([H, L, L0, L1, train_op], feed_dict={X: triplet})
+                ok, f = _tfembed.eval_mask(h);
+                avg += np.array([l, l0, l1, ok, f], dtype=np.float32)
                 step += 1
                 pass
             avg /= FLAGS.epoch_steps
+            txt = ', '.join(['%s=%.4f' % (a, b) for a, b in zip(metrics, list(avg))])
             stop_time = time.time()
-            txt = ', '.join(['%s=%.4f' % (a, b) for a, b in zip(metric_names, list(avg))])
-            print('step %d: elapsed=%.4f time=%.4f, %s'
-                    % (step, (stop_time - global_start_time), (stop_time - start_time), txt))
+            print('step %d %s' % (step, txt))
             epoch += 1
             if epoch and (epoch % FLAGS.ckpt_epochs == 0):
                 ckpt_path = '%s/%d' % (FLAGS.model, step)
