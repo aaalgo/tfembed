@@ -10,6 +10,9 @@
 #include <kgraph.h>
 #include <kgraph-data.h>
 #include <numpy/ndarrayobject.h>
+#define TFEMBED_DEBUG 1
+//#define TFEMBED_64 1
+#include "tfembed.h"
 using namespace boost::python;
 
 namespace kgraph {
@@ -34,6 +37,9 @@ namespace kgraph {
 }
 
 namespace {
+    using std::ofstream;
+    using std::ostream;
+    using std::ios;
     using std::string;
     using std::vector;
     using std::runtime_error;
@@ -241,6 +247,44 @@ namespace {
                 object(boost::python::handle<>((PyObject *)Mask)));
                 */
     }
+
+    void save_array (ostream &os, object _w, object _b) {
+        PyArrayObject *w = (PyArrayObject *)_w.ptr();
+        PyArrayObject *b = (PyArrayObject *)_b.ptr();
+        if (w->nd != 2) throw runtime_error("0");
+        if (b->nd != 1) throw runtime_error("1");
+        if (w->dimensions[1] != b->dimensions[0]) throw runtime_error("2");
+        uint32_t din = w->dimensions[0];
+        uint32_t dout = w->dimensions[1];
+        cerr << "saving layer " << din << "x" << dout << endl;
+        os.write((char const *)&din, sizeof(din));
+        os.write((char const *)&dout, sizeof(dout));
+        if (w->strides[0] != dout * sizeof(float)) throw runtime_error("3");
+        if (w->strides[1] != sizeof(float)) throw runtime_error("4");
+        if (b->strides[0] != sizeof(float)) throw runtime_error("5");
+        os.write(w->data, din * dout * sizeof(float));
+        os.write(b->data, dout * sizeof(float));
+    }
+
+    object save_model (string path, list params) {
+        {
+            ofstream os(path.c_str(), ios::binary);
+            uint32_t layers = len(params)/2;
+            os.write((char const *)&layers, sizeof(layers));
+            for (unsigned i = 0; i < layers; ++i) {
+                save_array(os, extract<object>(params[2*i]), extract<object>(params[2*i+1]));
+            }
+            os.flush();
+        }
+        tfembed::Hash hash(path);
+        cv::Mat m = hash.test();
+        npy_intp dims[] = {1, m.cols};
+        PyArrayObject *arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_FLOAT);
+        std::copy(m.ptr<float>(0),
+                  m.ptr<float>(0) + m.cols,
+                  (float *)arr->data);
+        return object(boost::python::handle<>((PyObject *)arr));
+    }
 }
 
 BOOST_PYTHON_MODULE(_tfembed)
@@ -254,5 +298,6 @@ BOOST_PYTHON_MODULE(_tfembed)
         .def("dim", &SampleStream::dim)
     ;
     def("eval_mask", ::eval_mask);
+    def("save_model", ::save_model);
 }
 
