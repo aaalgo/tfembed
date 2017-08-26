@@ -43,6 +43,7 @@ namespace {
     using std::string;
     using std::vector;
     using std::runtime_error;
+    using std::cout;
     using std::cerr;
     using std::endl;
     using std::fill;
@@ -285,6 +286,86 @@ namespace {
                   (float *)arr->data);
         return object(boost::python::handle<>((PyObject *)arr));
     }
+
+    void stat_db (string db) {
+        Matrix<float> data;
+        data.load_lshkit(db);
+        static unsigned const BINS = 4096;
+        vector<float> hist(BINS, 0);
+        for (unsigned i = 0; i < data.size(); ++i) {
+            float const *row = data[i];
+            for (unsigned j = 0; j < data.dim(); ++j) {
+                float v = row[j];
+                int bin = int(round(v * (BINS-1)));
+                hist[bin] += 1;
+            }
+        }
+        unsigned total = data.size() * data.dim();
+        for (auto &v: hist) v /= total;
+        for (unsigned i = 0; i < BINS; ++i) {
+            cout << 1.0 *i/(BINS-1) << '\t' << hist[i] << endl;
+        }
+    }
+
+    object load_lshkit (string path) {
+        Matrix<float> data;
+        data.load_lshkit(path);
+        npy_intp dims[] = {data.size(), data.dim()};
+        PyArrayObject *arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_FLOAT);
+        auto p = arr->data;
+        for (unsigned i = 0; i < data.size(); ++i) {
+            float const *r = data[i];
+            std::copy(r, r + data.dim(), (float *)p);
+            p += arr->strides[0];
+        }
+        return object(boost::python::handle<>((PyObject *)arr));
+    }
+
+
+    void stat_array (object _arr) {
+        PyArrayObject *arr = (PyArrayObject *)_arr.ptr();
+        static unsigned const BINS = 4096;
+        vector<float> hist(BINS, 0);
+        unsigned total = 0;
+        auto p = arr->data;
+        for (unsigned i = 0; i < arr->dimensions[0]; ++i) {
+            float const *row = (float const *)p;
+            for (unsigned j = 0; j < arr->dimensions[1]; ++j) {
+                float v = row[j];
+                int bin = int(round(v * (BINS-1)));
+                hist[bin] += 1;
+                total += 1;
+            }
+            p += arr->strides[0];
+        }
+        for (auto &v: hist) v /= total;
+        for (unsigned i = 0; i < BINS; ++i) {
+            cout << 1.0 *i/(BINS-1) << '\t' << hist[i] << endl;
+        }
+    }
+
+
+    /*
+    object save_pca_model (string path, list params) {
+        {
+            ofstream os(path.c_str(), ios::binary);
+            uint32_t layers = len(params)/2;
+            os.write((char const *)&layers, sizeof(layers));
+            for (unsigned i = 0; i < layers; ++i) {
+                save_array(os, extract<object>(params[2*i]), extract<object>(params[2*i+1]));
+            }
+            os.flush();
+        }
+        tfembed::Hash hash(path);
+        cv::Mat m = hash.test();
+        npy_intp dims[] = {1, m.cols};
+        PyArrayObject *arr = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_FLOAT);
+        std::copy(m.ptr<float>(0),
+                  m.ptr<float>(0) + m.cols,
+                  (float *)arr->data);
+        return object(boost::python::handle<>((PyObject *)arr));
+    }
+    */
 }
 
 BOOST_PYTHON_MODULE(_tfembed)
@@ -299,5 +380,7 @@ BOOST_PYTHON_MODULE(_tfembed)
     ;
     def("eval_mask", ::eval_mask);
     def("save_model", ::save_model);
+    def("stat_db", ::stat_db);
+    def("load_lshkit", ::load_lshkit);
 }
 

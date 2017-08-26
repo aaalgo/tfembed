@@ -48,7 +48,7 @@ flags.DEFINE_integer('epoch_steps', 10000, '')
 flags.DEFINE_integer('ckpt_epochs', 20, '')
 flags.DEFINE_integer('verbose', logging.INFO, '')
 flags.DEFINE_integer('dim', 256, '')
-flags.DEFINE_float('margin', 5.0, '')
+flags.DEFINE_float('margin', 2.0, '')
 
 
 def main (_):
